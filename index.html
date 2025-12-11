@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Simple XTC Viewer</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  /* Global page */
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background-color: #f5f5f5; /* subtle gray */
+    color: #202124;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  /* Flex row helper */
+  .row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  /* Canvas styling */
+  canvas {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08); /* subtle shadow */
+    image-rendering: pixelated;
+    background-color: #fff;
+    margin-bottom: 20px;
+  }
+
+  /* Controls */
+  #pageSlider {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    align-items: center;
+  }
+
+  input[type="range"] {
+    width: 320px;
+    height: 4px;
+    border-radius: 2px;
+    background-color: #ddd;
+    cursor: pointer;
+  }
+
+  /* Metadata info */
+  #meta {
+    margin-top: 12px;
+    font-size: 0.95rem;
+    color: #555;
+    text-align: center;
+  }
+
+  /* Scrollable chapter list */
+  .chapter-scroll {
+    max-height: 200px;
+    width: 100%;
+    max-width: 300px;
+    overflow-y: auto;
+    background-color: #fff;
+    border-radius: 6px;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.05);
+    padding: 4px 0;
+    margin-top: 12px;
+  }
+
+  /* Chapter line styling */
+  .chapter-line {
+    padding: 6px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid #eee;
+    transition: background 0.2s;
+    font-size: 0.95rem;
+    color: #202124;
+  }
+
+  .chapter-line:last-child {
+    border-bottom: none;
+  }
+
+  .chapter-line:hover {
+    background-color: #f0f0f0;
+  }
+
+  .chapter-line.active {
+    background-color: #e0f2ff;
+    font-weight: 600;
+    color: #0a66c2;
+  }
+</style>
+
+</head>
+<body>
+  <h3>Simple XTC (and XTG/XTH/XTCH) Viewer</h3>
+
+  <div class="row">
+    <input id="fileInput" type="file" accept=".xtc, .xtg, .xth, .xtch" />
+  </div>
+
+  <div id="pageControls">
+    <div class="row">
+      <button id="prevBtn">◀ Prev</button>
+      <button id="nextBtn">Next ▶</button>
+      <span id="pageInfo">-</span>
+    </div>
+
+    <div id="pageSlider" class="row">
+      <input id="frameRange" type="range" min="0" max="0" value="0" />
+    </div>
+  </div>
+
+  <div class="row" id="zoomDiv">
+    <label>
+    Zoom: <input id="zoomInput" type="number" value="100" min="10" max="800" step="10" style="width:70px;" /> %
+    </label>
+    <span id="imageInfo">-</span>
+  </div>
+
+  <br>
+  <canvas id="canvas"></canvas>
+
+  <div id="meta"></div>
+  <div id="chapterList" class="chapter-scroll"></div>
+
+<script>
+(() => {
+  // XTC/XTG/XTH/XTCH Format Technical Specification at
+  // https://gist.github.com/CrazyCoder/b125f26d6987c0620058249f59f1327d
+
+  function LOG(obj) { console.log(obj); }
+  function WARN(obj) { console.warn(obj); }
+  function ERROR(obj) { throw new Error(obj); }
+
+  const TEXT_DEC = new TextDecoder('utf-8');
+  let LE = true; // little endian
+  let MARK = {
+    XTC:  0x00435458,
+    XTCH: 0x48435458,
+    XTG:  0x00475458,
+    XTH:  0x00485458,
+  };
+
+  class XTGH_Image {
+    // Represents an XTG (1-bit) or XTH (2-bit) grayscale image
+    constructor(arrayBuffer) {
+      this.buf = arrayBuffer;
+      this.dv = new DataView(arrayBuffer);
+      this.header = null;
+
+      this.parseHeader();
+      //console.log(this);
+    }
+
+    parseHeader() {
+      let dv = this.dv;
+      if (dv.byteLength < 22) throw new Error('File too small to be XTG/XTH');
+      this.header = {
+        mark:        dv.getUint32(0,LE), // "XTG\0" or "XTH\0"
+        width:       dv.getUint16(4,LE),
+        height:      dv.getUint16(6,LE),
+        colorMode:   dv.getUint8 (8),
+        compression: dv.getUint8 (9),
+        dataSize:    dv.getUint32(10,LE),
+        md5: 0, // TODO
+      }
+
+      // basic validation
+      if (this.header.mark !== MARK.XTG && this.header.mark !== MARK.XTH) throw new Error('Not an XTG/XTH Image');
+      if (this.header.colorMode !== 0) throw new Error('Unsupported colorMode (only monochrome)');
+      if (this.header.compression !== 0) throw new Error('Unsupported compression');
+    }
+
+    getImageData() {
+      let dv = this.dv;
+      let w = this.header.width;
+      let h = this.header.height;
+
+      const imgDataOffset = 22;
+      if (imgDataOffset + this.header.dataSize > dv.byteLength) throw new Error('Image data out of range');
+
+      const rowBytes = Math.floor((w + 7) / 8);
+      const raw = new Uint8Array(this.buf, imgDataOffset, this.header.dataSize);
+
+      const rgba = new Uint8ClampedArray(w * h * 4);
+      if (this.header.mark === MARK.XTG) {
+        // convert 1bpp to RGBA
+        for (let y = 0; y < h; y++) {
+          const rowStart = y * rowBytes;
+          for (let x = 0; x < w; x++) {
+            const byte = raw[rowStart + (x >> 3)];
+            const bit = (byte >> (7 - (x & 7))) & 1; // MSB first
+            const v = bit ? 255 : 0;
+            const idx = (y * w + x) * 4;
+            rgba[idx] = v;
+            rgba[idx+1] = v;
+            rgba[idx+2] = v;
+            rgba[idx+3] = 255;
+          }
+        }
+      }
+      else if (this.header.mark === MARK.XTH) {
+        // two bit planes
+        const planeSize = Math.ceil((w * h) / 8);
+        const plane1 = raw.subarray(0, planeSize);           // first bit plane
+        const plane2 = raw.subarray(planeSize, planeSize*2); // second bit plane
+
+        // column-major: x = width-1 -> 0, y = 0 -> height-1
+        for (let x = 0; x < w; x++) {
+          const col = w - 1 - x; // reverse order
+          for (let y = 0; y < h; y++) {
+            const byteIndex = (y >> 3) + col * Math.ceil(h / 8);
+            const bitIndex = y & 7;
+
+            // read MSB first per byte
+            const bit1 = (plane1[byteIndex] >> (7 - bitIndex)) & 1;
+            const bit2 = (plane2[byteIndex] >> (7 - bitIndex)) & 1;
+            let pixelValue = (bit1 << 1) | bit2;
+
+            // map to display color. Notice grays are swapped
+            let v;
+            switch (pixelValue) {
+              case 0: v = 255; break; // White
+              case 1: v = 85;  break; // Dark Grey
+              case 2: v = 170; break; // Light Grey
+              case 3: v = 0;   break; // Black
+            }
+
+            const idx = (y * w + x) * 4;
+            rgba[idx] = v;
+            rgba[idx+1] = v;
+            rgba[idx+2] = v;
+            rgba[idx+3] = 255;
+          }
+        }
+      }
+
+      return { width: w, height: h, imageData: rgba };
+    }
+  }
+
+  class XTC_File {
+    // Represents an XTC or XTCH file (container of images, with metadata and chapters)
+    constructor(arrayBuffer) {
+      this.buf = arrayBuffer;
+      this.dv = new DataView(arrayBuffer);
+      this.header = null;
+      this.metadata = null;
+      this.chapters = [];
+      this.indexTable = [];
+      this.thumbnails = null; // same as images
+
+      this.parseHeader();
+      this.parseMetadata();
+      this.parseChapters();
+      this.parseIndexTable();
+      this.parseThumbnails();
+
+      //console.log(this);
+    }
+
+    parseHeader() { 
+      let dv = this.dv;
+      if (dv.byteLength < 56) throw new Error('File too small to be XTC/XTCH');
+      this.header = {
+        mark:           dv.getUint32(0,LE), // "XTC\0" or "XTCH"
+        version:        dv.getUint16(4,LE), // 0x0100 (v1.0)
+        pageCount:      dv.getUint16(6,LE), // 1-65535
+        readDirection:  dv.getUint8(8), // 0-2: 0=L->R, 1=R->L, 2=T->B
+        hasMetadata:    !!dv.getUint8(9),
+        hasThumbnails:  !!dv.getUint8(10),
+        hasChapters:    !!dv.getUint8(11),
+        currentPage:    dv.getUint32(12,LE), // 0-65535
+        metadataOffset: Number(dv.getBigUint64(16,LE)), // optional
+        indexOffset:    Number(dv.getBigUint64(24,LE)), // required
+        dataOffset:     Number(dv.getBigUint64(32,LE)), // required (but unused)
+        thumbOffset:    Number(dv.getBigUint64(40,LE)), // optional
+        chapterOffset:  Number(dv.getBigUint64(48,LE)), // optional
+      };
+      // basic validation
+      if (this.header.mark !== MARK.XTC && this.header.mark != MARK.XTCH) throw new Error('Not an XTC/XTCH file');
+      if (this.header.version !== 0x0100) WARN("Expected version v1.0 (0x100), got " + this.header.version)
+      if (this.header.pageCount <= 0) throw new Error('pageCount is <= 0');
+      if (this.header.readDirection > 2) throw new Error('Invalid read direction');
+      if (this.header.currentPage > 65535) throw new Error('Invalid current page');
+      function checkOffset(offset, name) {
+        if (offset < 0 || offset >= dv.byteLength) WARN('Bad offset: ' + name + ' ' + offset);
+      }
+      checkOffset(this.header.metadataOffset, "metadataOffset");
+      checkOffset(this.header.indexOffset, "indexOffset");
+      checkOffset(this.header.dataOffset, "dataOffset");
+      checkOffset(this.header.thumbOffset, "thumbOffset");
+      checkOffset(this.header.chapterOffset, "chapterOffset");
+    }
+
+    parseMetadata() {
+      if (!this.header.hasMetadata) return;
+      let dv = this.dv;
+      const offset = this.header.metadataOffset;
+      if (!offset || offset + 256 > dv.byteLength) throw new Error('Bad metadata offset');
+      const bytes = new Uint8Array(this.buf, offset, 256); 
+      this.metadata = {
+        title:        TEXT_DEC.decode(bytes.subarray(  0,128)).split('\0')[0] || '',
+        author:       TEXT_DEC.decode(bytes.subarray(128,192)).split('\0')[0] || '',
+        publisher:    TEXT_DEC.decode(bytes.subarray(192,224)).split('\0')[0] || '',
+        language:     TEXT_DEC.decode(bytes.subarray(224,240)).split('\0')[0] || '',
+        createTime:   dv.getUint32(offset+240,LE),
+        coverPage:    dv.getUint16(offset+244,LE),
+        chapterCount: dv.getUint16(offset+246,LE),
+        reserved:     Number(dv.getBigUint64(offset+248,LE)),
+      };
+    }
+
+    parseChapters() {
+      if (!this.header.hasChapters) return;
+      let dv = this.dv;
+      const count = this.metadata?.chapterCount || 0;
+      let offset = this.header.chapterOffset;
+      if (offset > dv.byteLength) return; // warn
+      for (let i=0; i<count; i++) {
+        if (offset +  96 > dv.byteLength) throw new Error('Chapter offset out of range');
+        const nameBytes   = new Uint8Array(this.buf, offset, 80);
+        const chapter = {
+          chapterName: TEXT_DEC.decode(nameBytes).split('\0')[0],
+          startPage:   dv.getUint16(offset+0x50,LE),
+          endPage:     dv.getUint16(offset+0x52,LE),
+          reserved1:   dv.getUint32(offset+0x54,LE),
+          reserved2:   dv.getUint32(offset+0x58,LE),
+          reserved3:   dv.getUint32(offset+0x5C,LE),
+        };
+        this.chapters.push(chapter);
+        offset += 96;
+      }
+    }
+
+    parseIndexTable() {
+      let dv = this.dv;
+      const count = this.header.pageCount;
+      let offset = this.header.indexOffset;
+      for (let i=0; i<count; i++){
+        if (offset + 16 > dv.byteLength) throw new Error('Index table offset out of range');
+        let index = {
+          offset: Number(dv.getBigUint64(offset,LE)),
+          size:   dv.getUint32(offset+8,LE),
+          width:  dv.getUint16(offset+12,LE),
+          height: dv.getUint16(offset+14,LE),
+        }
+        this.indexTable.push(index);
+        offset += 16;
+      }
+    }
+
+    parseThumbnails(){
+      if (!this.header.hasThumbnails) return;
+      throw new Error('Thumbnails not implemented')
+      return null; // TODO
+    }
+
+    getPageImage(pageIndex) {
+      if (pageIndex < 0 || pageIndex >= this.indexTable.length) return null;
+      const entry = this.indexTable[pageIndex];
+      const dv = this.dv;
+      const offset = entry.imgOffset;
+
+      // NOTES: We're making an (unnecessary) copy, but keeps the interface simple
+      const slice = this.buf.slice(entry.offset, entry.offset + entry.size);
+      //const view = new Uint8Array(this.buf, entry.offset, entry.size);
+      let xtg = new XTGH_Image(slice);
+      return xtg;
+    }
+  }
+
+  const fileInput = document.getElementById('fileInput');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const prevBtn = document.getElementById('prevBtn');
+  const nextBtn = document.getElementById('nextBtn');
+  const pageInfo = document.getElementById('pageInfo');
+  const imageInfo = document.getElementById('imageInfo');
+  const frameRange = document.getElementById('frameRange');
+  const metaDiv = document.getElementById('meta');
+  const zoomInput = document.getElementById("zoomInput");
+  const chapterList = document.getElementById("chapterList");
+  const pageControls = document.getElementById("pageControls");
+  const zoomDiv = document.getElementById("zoomDiv");
+
+  displayMode(0);
+
+  let xtc = null; // file
+  let xtg = null; // image
+  let currentPage = 0;
+
+  fileInput.addEventListener('change', async (e) => {
+    try {
+      const f = e.target.files[0];
+      if (!f) return;
+      const buf = await f.arrayBuffer();
+      const mark = new DataView(buf).getUint32(0,LE);
+      if (mark === MARK.XTC || mark === MARK.XTCH) { // book
+        xtc = new XTC_File(buf);
+
+        showMetadataIfAny();
+        frameRange.max = String(xtc.indexTable.length - 1);
+        frameRange.value = '0';
+        currentPage = 0;
+        renderChapterList();
+        displayMode(2);
+        await renderPage(0);
+      }
+      else if (mark === MARK.XTG || mark === MARK.XTH) { // image
+        xtc = null;
+        metaDiv.innerHTML = '';
+        currentPage = null;
+        chapterList.innerHTML = "";
+        displayMode(1);
+        xtg = new XTGH_Image(buf);
+        await renderImage();
+      }
+
+    } catch (err) {
+      alert('Error: ' + err.message);
+      console.error(err);
+    }
+  });
+
+
+  function showMetadataIfAny(){
+    metaDiv.textContent = '';
+    if (!xtc.header.hasMetadata) return;
+    let meta = xtc.metadata;
+    metaDiv.innerHTML = `<strong>${escapeHtml(meta.title)}</strong> - ${escapeHtml(meta.author)}<br/>${escapeHtml(meta.publisher)} ${escapeHtml(meta.language)} - created: ${new Date(meta.createTime*1000).toLocaleString()} - chapters: ${meta.chapterCount} - cover: ${meta.coverPage===0xFFFF? 'none': meta.coverPage}`;
+  }
+
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=> ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  async function renderPage(pageIndex){
+    if (!xtc) return;
+
+    xtg = xtc.getPageImage(pageIndex);
+    await renderImage();
+
+    pageInfo.textContent = `Page: ${pageIndex+1} / ${xtc.indexTable.length}`;
+    frameRange.value = String(pageIndex);
+    currentPage = pageIndex;
+  }
+
+  async function renderImage(){
+    if (!xtg) return;
+
+    // draw to canvas with zoom
+    const {width, height, imageData} = xtg.getImageData();
+
+    const zoom = parseFloat(zoomInput.value) / 100;
+
+    canvas.width = width * zoom;
+    canvas.height = height * zoom;
+    // create offscreen ImageData at native size then scale
+    const img = new ImageData(imageData, width, height);
+    // draw to temp canvas then scale up to main canvas
+    const tmp = document.createElement('canvas');
+    tmp.width = width;
+    tmp.height = height;
+    tmp.getContext('2d').putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
+
+    imageInfo.textContent = `(${width}x${height} px)`;
+  }
+
+  function renderChapterList() {
+    chapterList.innerHTML = "";
+
+    xtc.chapters.forEach((ch, index) => {
+      const line = document.createElement("div");
+      line.className = "chapter-line";
+      line.textContent = ch.chapterName || `Chapter ${index + 1}`;
+
+      line.addEventListener("click", () => {
+        renderPage(ch.startPage-1); // 1-based
+      });
+
+      chapterList.appendChild(line);
+    });
+  }
+
+  function displayMode(mode){
+    // mode==0: init
+    // mode==1: image
+    // mode==2: document
+    pageControls.style.display = mode == 2 ? "block" : "none";
+    zoomDiv.style.display      = mode != 0 ? "block" : "none";
+    chapterList.style.display  = mode == 2 ? "block" : "none";
+  }
+
+  prevBtn.addEventListener('click', () => { if (xtc && currentPage>0) renderPage(currentPage-1); });
+  nextBtn.addEventListener('click', () => { if (xtc && currentPage<xtc.indexTable.length-1) renderPage(currentPage+1); });
+  frameRange.addEventListener('input', (e) => { renderPage(Number(e.target.value)); });
+  zoomInput.addEventListener("input", () => { renderImage(); });
+
+  document.addEventListener("keydown", (e) => {
+    if (!xtc) return; // no file loaded
+    if (e.key === "ArrowLeft") { if (currentPage > 0) renderPage(currentPage - 1); }
+    else if (e.key === "ArrowRight") { if (currentPage < xtc.indexTable.length - 1) renderPage(currentPage + 1); }
+  });
+
+})();
+</script>
+</body>
+</html>
