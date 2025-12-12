@@ -37,11 +37,17 @@
     margin-bottom: 20px;
   }
 
+  h3 {
+    margin-bottom: 16px;
+    font-weight: 500;
+  }
+
   /* Controls */
-  #pageSlider {
-    display: flex;
-    gap: 8px;
+  #pageControls, #zoomDiv {
     margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
     align-items: center;
   }
 
@@ -54,7 +60,7 @@
   }
 
   /* Metadata info */
-  #meta {
+  #metaData, #imageInfo, #pageInfo {
     margin-top: 12px;
     font-size: 0.95rem;
     color: #555;
@@ -97,9 +103,11 @@
     font-weight: 600;
     color: #0a66c2;
   }
-
+  input[type="number"] {
+    width: 70px;
+  }
   .footer {
-    font-size: 0.5rem;
+    font-size: 0.6rem;
   }
 </style>
 
@@ -123,9 +131,9 @@
     </div>
   </div>
 
-  <div class="row" id="zoomDiv">
+  <div id="zoomDiv" class="row">
     <label>
-    Zoom: <input id="zoomInput" type="number" value="100" min="10" max="800" step="10" style="width:70px;" /> %
+    Zoom: <input id="zoomInput" type="number" value="100" min="10" max="800" step="10"/> %
     </label>
     <span id="imageInfo">-</span>
   </div>
@@ -133,8 +141,9 @@
   <br>
   <canvas id="canvas"></canvas>
 
-  <div id="meta"></div>
+  <div id="metaData"></div>
   <div id="chapterList" class="chapter-scroll"></div>
+  <br>
   <div class="footer">Open-source. Contribute <a href="https://github.com/SimoGecko/XtcViewer/">here</a>.</div>
 
 <script>
@@ -147,13 +156,8 @@
   function ERROR(obj) { throw new Error(obj); }
 
   const TEXT_DEC = new TextDecoder('utf-8');
-  let LE = true; // little endian
-  let MARK = {
-    XTC:  0x00435458,
-    XTCH: 0x48435458,
-    XTG:  0x00475458,
-    XTH:  0x00485458,
-  };
+  const LE = true; // little endian
+  const MARK = { XTC: 0x00435458, XTCH: 0x48435458, XTG: 0x00475458, XTH: 0x00485458 };
 
   class XTGH_Image {
     // Represents an XTG (1-bit) or XTH (2-bit) grayscale image
@@ -384,19 +388,18 @@
     }
   }
 
-  const fileInput = document.getElementById('fileInput');
-  const canvas = document.getElementById('canvas');
-  const ctx = canvas.getContext('2d');
-  const prevBtn = document.getElementById('prevBtn');
-  const nextBtn = document.getElementById('nextBtn');
-  const pageInfo = document.getElementById('pageInfo');
-  const imageInfo = document.getElementById('imageInfo');
-  const frameRange = document.getElementById('frameRange');
-  const metaDiv = document.getElementById('meta');
-  const zoomInput = document.getElementById("zoomInput");
-  const chapterList = document.getElementById("chapterList");
+  const fileInput    = document.getElementById('fileInput');
+  const canvas       = document.getElementById('canvas');
+  const prevBtn      = document.getElementById('prevBtn');
+  const nextBtn      = document.getElementById('nextBtn');
+  const pageInfo     = document.getElementById('pageInfo');
+  const imageInfo    = document.getElementById('imageInfo');
+  const frameRange   = document.getElementById('frameRange');
+  const metaDiv      = document.getElementById('metaData');
+  const zoomInput    = document.getElementById("zoomInput");
+  const chapterList  = document.getElementById("chapterList");
   const pageControls = document.getElementById("pageControls");
-  const zoomDiv = document.getElementById("zoomDiv");
+  const zoomDiv      = document.getElementById("zoomDiv");
 
   displayMode(0);
 
@@ -404,7 +407,7 @@
   let xtg = null; // image
   let currentPage = 0;
 
-  fileInput.addEventListener('change', async (e) => {
+  fileInput.addEventListener('change', async e => {
     try {
       const f = e.target.files[0];
       if (!f) return;
@@ -414,7 +417,7 @@
         xtc = new XTC_File(buf);
 
         showMetadataIfAny();
-        frameRange.max = String(xtc.indexTable.length - 1);
+        frameRange.max = String(xtc.indexTable.length-1);
         frameRange.value = '0';
         currentPage = 0;
         renderChapterList();
@@ -423,9 +426,9 @@
       }
       else if (mark === MARK.XTG || mark === MARK.XTH) { // image
         xtc = null;
-        metaDiv.innerHTML = '';
         currentPage = null;
-        chapterList.innerHTML = "";
+        chapterList.innerHTML = '';
+        metaDiv.innerHTML = '';
         displayMode(1);
         xtg = new XTGH_Image(buf);
         await renderImage();
@@ -440,12 +443,14 @@
 
   function showMetadataIfAny(){
     metaDiv.textContent = '';
-    if (!xtc.header.hasMetadata) return;
-    let meta = xtc.metadata;
-    metaDiv.innerHTML = `<strong>${escapeHtml(meta.title)}</strong> - ${escapeHtml(meta.author)}<br/>${escapeHtml(meta.publisher)} ${escapeHtml(meta.language)} - created: ${new Date(meta.createTime*1000).toLocaleString()} - chapters: ${meta.chapterCount} - cover: ${meta.coverPage===0xFFFF? 'none': meta.coverPage}`;
+    if (!xtc || !xtc.header.hasMetadata) return;
+    const m = xtc.metadata;
+    metaDiv.innerHTML = `<strong>${escapeHtml(m.title)}</strong> - ${escapeHtml(m.author)}<br/>${escapeHtml(m.publisher)} ${escapeHtml(m.language)} - created: ${new Date(m.createTime*1000).toLocaleString()} - chapters: ${m.chapterCount} - cover: ${m.coverPage===0xFFFF? 'none': m.coverPage}`;
   }
 
-  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=> ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
 
   async function renderPage(pageIndex){
     if (!xtc) return;
@@ -459,15 +464,14 @@
   }
 
   async function renderImage(){
+    // draw to canvas with zoom
     if (!xtg) return;
 
-    // draw to canvas with zoom
-    const {width, height, imageData} = xtg.getImageData();
+    const { width, height, imageData } = xtg.getImageData();
+    const zoom = parseFloat(zoomInput.value)/100;
 
-    const zoom = parseFloat(zoomInput.value) / 100;
-
-    canvas.width = width * zoom;
-    canvas.height = height * zoom;
+    canvas.width = width*zoom;
+    canvas.height = height*zoom;
     // create offscreen ImageData at native size then scale
     const img = new ImageData(imageData, width, height);
     // draw to temp canvas then scale up to main canvas
@@ -475,6 +479,7 @@
     tmp.width = width;
     tmp.height = height;
     tmp.getContext('2d').putImageData(img, 0, 0);
+    const ctx = canvas.getContext('2d');
     ctx.imageSmoothingEnabled = false;
     ctx.clearRect(0,0,canvas.width,canvas.height);
     ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
@@ -483,12 +488,12 @@
   }
 
   function renderChapterList() {
-    chapterList.innerHTML = "";
-
+    chapterList.innerHTML = '';
+    if (!xtc) return;
     xtc.chapters.forEach((ch, index) => {
       const line = document.createElement("div");
       line.className = "chapter-line";
-      line.textContent = ch.chapterName || `Chapter ${index + 1}`;
+      line.textContent = ch.chapterName || `Chapter ${index+1}`;
 
       line.addEventListener("click", () => {
         renderPage(ch.startPage-1); // 1-based
@@ -509,10 +514,10 @@
 
   prevBtn.addEventListener('click', () => { if (xtc && currentPage>0) renderPage(currentPage-1); });
   nextBtn.addEventListener('click', () => { if (xtc && currentPage<xtc.indexTable.length-1) renderPage(currentPage+1); });
-  frameRange.addEventListener('input', (e) => { renderPage(Number(e.target.value)); });
+  frameRange.addEventListener('input', e => { renderPage(Number(e.target.value)); });
   zoomInput.addEventListener("input", () => { renderImage(); });
 
-  document.addEventListener("keydown", (e) => {
+  document.addEventListener("keydown", e => {
     if (!xtc) return; // no file loaded
     if (e.key === "ArrowLeft") { if (currentPage > 0) renderPage(currentPage - 1); }
     else if (e.key === "ArrowRight") { if (currentPage < xtc.indexTable.length - 1) renderPage(currentPage + 1); }
